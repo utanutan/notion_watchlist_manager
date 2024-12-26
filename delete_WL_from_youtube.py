@@ -10,6 +10,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
+# Load environment variables
+load_dotenv()
+
 # ロギング設定
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -20,6 +23,7 @@ NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 NOTION_VERSION = "2022-06-28"
 DELETE_PROPERTY_NAME = "delete"    # チェックボックス型プロパティ
 VIDEOID_PROPERTY_NAME = "Link"     # 動画URLを格納しているプロパティ
+PROPERTY_TITLE = "Name"           # Title型（get_WL_from_youtubeと統一）
 # ----------------------------------------------
 
 def setup_driver():
@@ -189,8 +193,8 @@ def query_notion_delete_items():
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     headers = {
         "Authorization": f"Bearer {NOTION_API_TOKEN}",
-        "Notion-Version": NOTION_VERSION,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_VERSION
     }
     data = {
         "filter": {
@@ -218,7 +222,7 @@ def query_notion_delete_items():
             logger.info(f"Available properties for page {page_id}: {list(props.keys())}")
 
             # タイトルプロパティを取得
-            title_prop = props.get("Title", props.get("Name", {}))
+            title_prop = props.get(PROPERTY_TITLE, {})
             title_value = ""
             if title_prop["type"] == "title":
                 title_array = title_prop.get("title", [])
@@ -254,9 +258,6 @@ def query_notion_delete_items():
         return []
 
 def main():
-    # 環境変数を読み込む
-    load_dotenv()
-
     # Seleniumドライバーをセットアップ
     driver = None
     try:
