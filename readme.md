@@ -117,19 +117,3 @@ sequenceDiagram
    ```bash
    python delete_WL_from_youtube.py
    ```
-
-## 注意事項
-- APIの利用制限に注意してください
-- 認証情報（`token.json`）は安全に保管してください
-- 初回実行時はブラウザで認証が必要です
-
-
-## はまりポイント
-- 元々Youtube Data API v3で直接後でみる動画を取得するつもりだったけど、なんかできないらしい
-
-問題：YouTube Data API v3で「後で見る」リストが取得できない
-YouTube Data API v3では「後で見る」リストを直接取得できないことが判明しました。（実行しても0件でか取得されない。。）そのため、Google Takeoutを利用してリストをCSV形式で取得する方式に切り替えました。
-
-参考情報：
-- https://www.reddit.com/r/AskProgramming/comments/164e82m/how_can_i_get_videos_in_my_watch_later_playlist/
-- https://note.com/kei198403/n/n873d9816aba5
