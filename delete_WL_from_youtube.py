@@ -81,7 +81,7 @@ def remove_from_watch_later(driver, video_id):
         )
         
         # 少し待機してページの読み込みを確実にする
-        time.sleep(5)
+        time.sleep(2)
         
         # メタデータセクションが読み込まれるまで待機
         logger.info("Waiting for metadata section...")
@@ -130,7 +130,7 @@ def remove_from_watch_later(driver, video_id):
             driver.execute_script("arguments[0].click();", watch_later_checkbox)
             logger.info(f"Successfully removed video '{video_id}' from Watch Later playlist")
             # 変更が反映されるまで少し待機
-            time.sleep(2)
+            time.sleep(1)
             return True
         else:
             logger.info(f"Video '{video_id}' is not in Watch Later playlist")
