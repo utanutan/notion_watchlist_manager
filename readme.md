@@ -13,7 +13,7 @@ sequenceDiagram
     participant Py1 as get_WL_from_youtube.py
     participant ND as Notion DB
     participant Py2 as delete_WL_from_youtube.py
-    participant API as YouTube Data API
+    participant Sel as Selenium WebDriver
 
     %% データ取得フロー
     User->>GT: 1. 後で見るリストのエクスポート要求
@@ -27,15 +27,16 @@ sequenceDiagram
     ND-->>User: 7. 登録完了
 
     %% 削除フロー
-    User->>ND: 8. 不要な動画にチェック
-    User->>Py2: 9. 削除実行
-    Py2->>ND: 10. チェック済み動画取得
-    ND-->>Py2: 11. 削除対象リスト
-    Py2->>API: 12. 動画削除リクエスト
-    API->>YT: 13. 動画削除実行
-    YT-->>API: 14. 削除完了
-    API-->>Py2: 15. 削除結果
-    Py2-->>User: 16. 完了通知
+    User->>ND: 8. 不要な動画に`delete`チェック
+    Py2->>ND: 9. チェック済み動画取得
+    ND-->>Py2: 10. 削除対象リスト
+    Py2->>Sel: 11. ブラウザ操作開始
+    Sel->>YT: 12. 動画ページにアクセス
+    Sel->>YT: 13. 「後で見る」から削除
+    YT-->>Sel: 14. 削除完了
+    Py2->>ND: 15. `delete`フラグをリセット
+    Py2->>ND: 16. `deleted`フラグを設定
+    Py2-->>User: 17. 処理結果を通知
 ```
 
 ### システム構成
@@ -52,13 +53,17 @@ sequenceDiagram
    - タイトルとリンクを管理
   
 4. Notionのデータベース
-   - 不要な動画に対してチェックをつける。
+   - 不要な動画に対してチェックをつける
+   - 削除済み動画を追跡
 
-5. Pythonスクリプト
+5. Selenium WebDriver
+   - ブラウザを自動操作
+   - YouTubeの「後で見る」リストから動画を削除
+   - ブラウザ操作の柔軟性と信頼性を提供
+
+6. Pythonスクリプト
    - `get_WL_from_youtube.py`: YouTubeから動画情報を取得しNotionに登録
    - `delete_WL_from_youtube.py`: YouTubeの「後で見る」リストから動画を削除
-
-
 
 ## 準備手順
 
@@ -71,10 +76,10 @@ sequenceDiagram
 ### 2. Notionのデータベースを作成
 1. 新しいNotionデータベースを作成します。
 2. 以下のプロパティを追加します：
-   - **Name**（タイトル型）
-   - **Link**（URL型）
-3. Notion Integrationを作成し、APIトークンを取得します。
-4. データベースIDを取得します。
+   - **Name**（タイトル型）: 動画のタイトル
+   - **Link**（URL型）: YouTube動画のURL
+   - **delete**（チェックボックス型）: 削除対象の動画にチェック
+   - **deleted**（チェックボックス型）: 削除が完了した動画を追跡
 
 ### 3. 環境変数の設定
 1. プロジェクトのルートディレクトリに `.env` ファイルを作成します。
@@ -94,13 +99,8 @@ sequenceDiagram
 1. **Python 3.x**をインストールします。
 2. 必要なライブラリをインストールします：
    ```bash
-   pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client requests python-dotenv
+   pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client requests python-dotenv selenium
    ```
-
-### 5. Google Cloud Consoleで以下を設定します：
-- プロジェクトを作成。
-- YouTube Data APIを有効化。
-- OAuth 2.0クライアントIDを作成し、`.env`で指定した名前（デフォルト: `client_secret.json`）として保存します。
 
 ## 使い方
 
@@ -112,8 +112,13 @@ sequenceDiagram
    ```
 
 ### Notionに登録された動画を削除する
-1. Notionの画面から不要な動画にチェックをつける
+1. Notionの画面から不要な動画に`delete`チェックをつける
 2. `delete_WL_from_youtube.py`を実行しYouTubeの「後で見る」リストから動画を削除
    ```bash
    python delete_WL_from_youtube.py
    ```
+
+## 注意点
+- ヘッドレスモードは現在無効化されています（保存ボタンの検出に問題があるため）
+- ブラウザウィンドウが表示されるため、実行中は画面に注意してください
+- 動画の削除には手動でのログイン状態が必要です
