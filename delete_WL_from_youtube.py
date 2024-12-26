@@ -16,12 +16,15 @@ NOTION_API_TOKEN = os.getenv("NOTION_API_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 NOTION_VERSION = "2022-06-28"
 DELETE_PROPERTY_NAME = "delete"    # チェックボックス型プロパティ
-VIDEOID_PROPERTY_NAME = "VideoID"  # 動画IDを格納しているプロパティ
+VIDEOID_PROPERTY_NAME = "Link"  # 動画URLを格納しているプロパティ
 # ----------------------------------------------
 
 # ----------------- YouTube 設定 -----------------
 CLIENT_SECRET_FILE = os.getenv("CLIENT_SECRET_FILE", "client_secret.json")
-SCOPES = ["https://www.googleapis.com/auth/youtube"]  # 削除操作が必要なので、readonly 以外
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+    "https://www.googleapis.com/auth/youtube"
+]  # 削除操作が必要なので、readonly 以外
 TOKEN_FILE = "token.json"
 # ----------------------------------------------
 
@@ -56,7 +59,7 @@ def authenticate_youtube():
 def query_notion_delete_items():
     """
     Notionデータベースをクエリして、「delete」チェックボックスがtrueのページを取得する。
-    返り値は [ {"page_id": str, "video_id": str}, ... ] のリスト
+    返り値は [ {"page_id": str, "video_id": str, "title": str}, ... ] のリスト
     """
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
     headers = {
@@ -84,25 +87,40 @@ def query_notion_delete_items():
         page_id = page["id"]
         props = page["properties"]
 
-        # VideoIDプロパティから動画IDを取得（Rich textかTitleかに注意）
-        if VIDEOID_PROPERTY_NAME not in props:
-            continue
-        
-        video_id_value = ""
-        prop_info = props[VIDEOID_PROPERTY_NAME]
-        # ここではRich text型を想定
-        if prop_info["type"] == "rich_text":
-            text_array = prop_info.get("rich_text", [])
-            if text_array:
-                video_id_value = text_array[0]["text"]["content"]
-        # Title型なら "title" プロパティを参照
-        elif prop_info["type"] == "title":
-            title_array = prop_info.get("title", [])
+        # デバッグ用：利用可能なプロパティ名を出力
+        logger.info(f"Available properties for page {page_id}: {list(props.keys())}")
+
+        # タイトルプロパティを取得
+        title_prop = props.get("Title", props.get("Name", {}))
+        title_value = ""
+        if title_prop["type"] == "title":
+            title_array = title_prop.get("title", [])
             if title_array:
-                video_id_value = title_array[0]["text"]["content"]
+                title_value = title_array[0]["text"]["content"]
+
+        # VideoIDプロパティから動画IDを取得（Rich textかTitleかに注意）
+        video_id_value = ""
+        if VIDEOID_PROPERTY_NAME not in props:
+            logger.warning(f"Link property not found in page {page_id}")
+            continue
+            
+        prop_info = props[VIDEOID_PROPERTY_NAME]
+        # URLからvideo_idを抽出する
+        if prop_info["type"] == "url":
+            url = prop_info.get("url", "")
+            if "youtube.com" in url or "youtu.be" in url:
+                # URLからvideo_idを抽出
+                if "youtube.com/watch?v=" in url:
+                    video_id_value = url.split("watch?v=")[1].split("&")[0]
+                elif "youtu.be/" in url:
+                    video_id_value = url.split("youtu.be/")[1].split("?")[0]
 
         if video_id_value:
-            delete_items.append({"page_id": page_id, "video_id": video_id_value})
+            delete_items.append({
+                "page_id": page_id, 
+                "video_id": video_id_value,
+                "title": title_value
+            })
     
     return delete_items
 
@@ -153,7 +171,12 @@ def main():
         logger.info("No items found with delete == true.")
         return
 
-    logger.info(f"Found {len(items)} items to delete: {items}")
+    # 削除対象の動画一覧を詳細にログ出力
+    logger.info(f"Found {len(items)} items to delete:")
+    for i, item in enumerate(items, 1):
+        logger.info(f"{i}. Title: {item['title']}")
+        logger.info(f"   Video ID: {item['video_id']}")
+        logger.info(f"   Page ID: {item['page_id']}")
 
     # 2. YouTubeにOAuth認証
     youtube = authenticate_youtube()
