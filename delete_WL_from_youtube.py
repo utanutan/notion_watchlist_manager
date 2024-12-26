@@ -22,6 +22,7 @@ NOTION_API_TOKEN = os.getenv("NOTION_API_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 NOTION_VERSION = "2022-06-28"
 DELETE_PROPERTY_NAME = "delete"    # チェックボックス型プロパティ
+DELETED_PROPERTY_NAME = "deleted"  # チェックボックス型プロパティ（削除済みフラグ）
 VIDEOID_PROPERTY_NAME = "Link"     # 動画URLを格納しているプロパティ
 PROPERTY_TITLE = "Name"           # Title型（get_WL_from_youtubeと統一）
 # ----------------------------------------------
@@ -34,9 +35,6 @@ def setup_driver():
     user_data_dir = os.path.abspath('./chrome_profile')
     options.add_argument(f'--user-data-dir={user_data_dir}')
     options.add_argument('--profile-directory=Profile 1')
-    
-    # ヘッドレスモードを有効化
-    # options.add_argument('--headless=new')
     
     # セキュリティ関連の設定
     options.add_argument('--no-sandbox')
@@ -148,13 +146,14 @@ def remove_from_watch_later(driver, video_id):
         logger.error(f"Failed to remove video '{video_id}' from Watch Later: {e}")
         return False
 
-def update_notion_delete_flag(page_id, delete_flag=False):
+def update_notion_delete_flag(page_id, delete_flag=False, deleted_flag=False):
     """
-    Notionのページの delete フラグを更新する
+    Notionのページの delete フラグと deleted フラグを更新する
 
     Args:
         page_id (str): 更新対象のページID
-        delete_flag (bool): 設定する値（デフォルトはFalse）
+        delete_flag (bool): deleteプロパティの値（デフォルトはFalse）
+        deleted_flag (bool): deletedプロパティの値（デフォルトはFalse）
 
     Returns:
         bool: 更新に成功した場合はTrue、失敗した場合はFalse
@@ -162,24 +161,23 @@ def update_notion_delete_flag(page_id, delete_flag=False):
     url = f"https://api.notion.com/v1/pages/{page_id}"
     headers = {
         "Authorization": f"Bearer {NOTION_API_TOKEN}",
-        "Notion-Version": NOTION_VERSION,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Notion-Version": NOTION_VERSION
     }
     data = {
         "properties": {
-            DELETE_PROPERTY_NAME: {
-                "checkbox": delete_flag
-            }
+            DELETE_PROPERTY_NAME: {"checkbox": delete_flag},
+            DELETED_PROPERTY_NAME: {"checkbox": deleted_flag}
         }
     }
 
     try:
         response = requests.patch(url, headers=headers, json=data)
         if response.status_code == 200:
-            logger.info(f"Successfully updated delete flag to {delete_flag} for page {page_id}")
+            logger.info(f"Successfully updated delete flag to {delete_flag} and deleted flag to {deleted_flag} for page {page_id}")
             return True
         else:
-            logger.error(f"Failed to update Notion page {page_id}: {response.status_code}, {response.text}")
+            logger.error(f"Failed to update page {page_id}: {response.status_code}, {response.text}")
             return False
     except Exception as e:
         logger.error(f"Error updating Notion page {page_id}: {str(e)}")
@@ -261,37 +259,37 @@ def main():
     # Seleniumドライバーをセットアップ
     driver = None
     try:
-        driver = setup_driver()
-        
-        # 削除対象のアイテムをNotionから取得
-        logger.info("Querying Notion for items to delete...")
+        # 削除対象のアイテムを取得
         delete_items = query_notion_delete_items()
         if not delete_items:
-            logger.info("No items to delete")
+            logger.info("No items found with delete flag set to true")
             return
 
-        # 各アイテムについて「あとで見る」から削除し、Notionを更新
+        driver = setup_driver()
         success_count = 0
-        for entry in delete_items:
-            vid = entry["video_id"]
-            page_id = entry["page_id"]
-            title = entry["title"]
+        total_count = len(delete_items)
 
-            logger.info(f"Processing: {title} (ID: {vid})")
-            if remove_from_watch_later(driver, vid):
-                if update_notion_delete_flag(page_id, False):
+        for item in delete_items:
+            page_id = item["page_id"]
+            video_id = item["video_id"]
+            title = item["title"]
+
+            logger.info(f"Processing: {title} (ID: {video_id})")
+            
+            # 動画を「後で見る」リストから削除
+            if remove_from_watch_later(driver, video_id):
+                # 削除に成功した場合、deleteフラグをFalseに、deletedフラグをTrueに設定
+                if update_notion_delete_flag(page_id, delete_flag=False, deleted_flag=True):
                     success_count += 1
                     logger.info(f"Successfully processed: {title}")
-                else:
-                    logger.error(f"Failed to update Notion flag for: {title}")
             else:
-                logger.error(f"Failed to remove from Watch Later: {title}")
+                # 削除に失敗した場合、deleteフラグのみFalseに設定
+                if update_notion_delete_flag(page_id, delete_flag=False, deleted_flag=False):
+                    logger.info(f"Failed to remove video but updated delete flag: {title}")
 
-        # 結果を表示
-        logger.info(f"Deletion complete. Successfully deleted {success_count} out of {len(delete_items)} videos.")
+        logger.info(f"Deletion complete. Successfully deleted {success_count} out of {total_count} videos.")
 
     finally:
-        # ドライバーをクリーンアップ
         if driver:
             driver.quit()
 
