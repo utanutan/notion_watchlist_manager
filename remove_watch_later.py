@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
+import logging
 import os
 import time
-import logging
-import requests
-from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -14,13 +12,8 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# ----------------- Notion 設定 ------------------
-NOTION_API_TOKEN = os.getenv("NOTION_API_TOKEN")
-NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
-NOTION_VERSION = "2022-06-28"
-DELETE_PROPERTY_NAME = "delete"    # チェックボックス型プロパティ
-VIDEOID_PROPERTY_NAME = "Link"     # 動画URLを格納しているプロパティ
-# ----------------------------------------------
+# 削除対象の動画ID
+TARGET_VIDEO_ID = "BPODklKbx5s"
 
 def setup_driver():
     """Seleniumのドライバーをセットアップする"""
@@ -102,7 +95,7 @@ def remove_from_watch_later(driver, video_id):
         # 保存ボタンをクリック
         logger.info("Waiting for save button...")
         save_button = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//*[@id='items']/ytd-menu-service-item-renderer[2]/tp-yt-paper-item/yt-formatted-string"))
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "ytd-menu-service-item-renderer:nth-child(2) tp-yt-paper-item"))
         )
         logger.info("Found save button, clicking...")
         driver.execute_script("arguments[0].click();", save_button)
@@ -144,154 +137,25 @@ def remove_from_watch_later(driver, video_id):
         logger.error(f"Failed to remove video '{video_id}' from Watch Later: {e}")
         return False
 
-def update_notion_delete_flag(page_id, delete_flag=False):
-    """
-    Notionのページの delete フラグを更新する
-
-    Args:
-        page_id (str): 更新対象のページID
-        delete_flag (bool): 設定する値（デフォルトはFalse）
-
-    Returns:
-        bool: 更新に成功した場合はTrue、失敗した場合はFalse
-    """
-    url = f"https://api.notion.com/v1/pages/{page_id}"
-    headers = {
-        "Authorization": f"Bearer {NOTION_API_TOKEN}",
-        "Notion-Version": NOTION_VERSION,
-        "Content-Type": "application/json"
-    }
-    data = {
-        "properties": {
-            DELETE_PROPERTY_NAME: {
-                "checkbox": delete_flag
-            }
-        }
-    }
-
-    try:
-        response = requests.patch(url, headers=headers, json=data)
-        if response.status_code == 200:
-            logger.info(f"Successfully updated delete flag to {delete_flag} for page {page_id}")
-            return True
-        else:
-            logger.error(f"Failed to update Notion page {page_id}: {response.status_code}, {response.text}")
-            return False
-    except Exception as e:
-        logger.error(f"Error updating Notion page {page_id}: {str(e)}")
-        return False
-
-def query_notion_delete_items():
-    """
-    Notionデータベースをクエリして、「delete」チェックボックスがtrueのページを取得する。
-    返り値は [ {"page_id": str, "video_id": str, "title": str}, ... ] のリスト
-    """
-    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
-    headers = {
-        "Authorization": f"Bearer {NOTION_API_TOKEN}",
-        "Notion-Version": NOTION_VERSION,
-        "Content-Type": "application/json"
-    }
-    data = {
-        "filter": {
-            "property": DELETE_PROPERTY_NAME,
-            "checkbox": {
-                "equals": True
-            }
-        }
-    }
-
-    try:
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code != 200:
-            logger.error(f"Failed to query Notion DB: {response.status_code}, {response.text}")
-            return []
-
-        results = response.json().get("results", [])
-        delete_items = []
-
-        for page in results:
-            page_id = page["id"]
-            props = page["properties"]
-
-            # デバッグ用：利用可能なプロパティ名を出力
-            logger.info(f"Available properties for page {page_id}: {list(props.keys())}")
-
-            # タイトルプロパティを取得
-            title_prop = props.get("Title", props.get("Name", {}))
-            title_value = ""
-            if title_prop["type"] == "title":
-                title_array = title_prop.get("title", [])
-                if title_array:
-                    title_value = title_array[0]["text"]["content"]
-
-            # VideoIDプロパティから動画IDを取得
-            video_id_value = ""
-            if VIDEOID_PROPERTY_NAME not in props:
-                logger.warning(f"Link property not found in page {page_id}")
-                continue
-
-            prop_info = props[VIDEOID_PROPERTY_NAME]
-            if prop_info["type"] == "url":
-                url = prop_info.get("url", "")
-                if "youtube.com" in url or "youtu.be" in url:
-                    if "youtube.com/watch?v=" in url:
-                        video_id_value = url.split("watch?v=")[1].split("&")[0]
-                    elif "youtu.be/" in url:
-                        video_id_value = url.split("youtu.be/")[1].split("?")[0]
-
-            if video_id_value:
-                delete_items.append({
-                    "page_id": page_id,
-                    "video_id": video_id_value,
-                    "title": title_value
-                })
-
-        return delete_items
-
-    except Exception as e:
-        logger.error(f"Error querying Notion database: {str(e)}")
-        return []
-
 def main():
-    # 環境変数を読み込む
-    load_dotenv()
-
-    # Seleniumドライバーをセットアップ
     driver = None
     try:
+        # Seleniumドライバーをセットアップ
         driver = setup_driver()
         
-        # 削除対象のアイテムをNotionから取得
-        logger.info("Querying Notion for items to delete...")
-        delete_items = query_notion_delete_items()
-        if not delete_items:
-            logger.info("No items to delete")
-            return
-
-        # 各アイテムについて「あとで見る」から削除し、Notionを更新
-        success_count = 0
-        for entry in delete_items:
-            vid = entry["video_id"]
-            page_id = entry["page_id"]
-            title = entry["title"]
-
-            logger.info(f"Processing: {title} (ID: {vid})")
-            if remove_from_watch_later(driver, vid):
-                if update_notion_delete_flag(page_id, False):
-                    success_count += 1
-                    logger.info(f"Successfully processed: {title}")
-                else:
-                    logger.error(f"Failed to update Notion flag for: {title}")
-            else:
-                logger.error(f"Failed to remove from Watch Later: {title}")
-
-        # 結果を表示
-        logger.info(f"Deletion complete. Successfully deleted {success_count} out of {len(delete_items)} videos.")
-
+        # 動画を「後で見る」から削除
+        logger.info(f"Attempting to remove video {TARGET_VIDEO_ID} from Watch Later...")
+        success = remove_from_watch_later(driver, TARGET_VIDEO_ID)
+        
+        if success:
+            logger.info("Operation completed successfully")
+        else:
+            logger.error("Operation failed")
+            
     finally:
         # ドライバーをクリーンアップ
         if driver:
+            logger.info("Cleaning up browser...")
             driver.quit()
 
 if __name__ == "__main__":

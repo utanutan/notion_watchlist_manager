@@ -3,3 +3,5 @@ token.json
 client_secret.json
 Watchlater.csv
 .env
+chrome_profile
+__pycache__
