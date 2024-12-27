@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 import os
-import time
 import logging
-import requests
+import agentql
+from agentql.ext.playwright.sync_api import Page
+from playwright.sync_api import sync_playwright
 from dotenv import load_dotenv
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+import requests
 
-# Load environment variables
+# 環境変数の読み込み
 load_dotenv()
 
-# ロギング設定
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# ロギングの設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# ----------------- Notion 設定 ------------------
+# Notion設定
 NOTION_API_TOKEN = os.getenv("NOTION_API_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 NOTION_VERSION = "2022-06-28"
@@ -25,126 +25,78 @@ DELETE_PROPERTY_NAME = "delete"    # チェックボックス型プロパティ
 DELETED_PROPERTY_NAME = "deleted"  # チェックボックス型プロパティ（削除済みフラグ）
 VIDEOID_PROPERTY_NAME = "Link"     # 動画URLを格納しているプロパティ
 PROPERTY_TITLE = "Name"           # Title型（get_WL_from_youtubeと統一）
-# ----------------------------------------------
 
-def setup_driver():
-    """Seleniumのドライバーをセットアップする"""
-    options = webdriver.ChromeOptions()
-    
-    # ユーザーデータとプロファイルディレクトリを設定
-    user_data_dir = os.path.abspath('./chrome_profile')
-    options.add_argument(f'--user-data-dir={user_data_dir}')
-    options.add_argument('--profile-directory=Profile 1')
-    
-    # セキュリティ関連の設定
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-blink-features=AutomationControlled')
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-    
-    # その他の設定
-    options.add_argument('--start-maximized')
-    options.add_argument('--disable-extensions')
-    options.add_argument('--disable-popup-blocking')
-    options.add_argument('--window-size=1920,1080')  # ヘッドレスモード用のウィンドウサイズ
-    
-    driver = webdriver.Chrome(options=options)
-    
-    # JavaScriptを実行してWebDriverフラグを削除
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    
-    driver.implicitly_wait(10)
-    return driver
+# 保存メニュー項目を探すクエリ
+SAVE_MENU_QUERY = """
+{
+    menu_items[] {
+        watch_later(後で見る)
+    }
+}
+"""
 
-def remove_from_watch_later(driver, video_id):
-    """
-    YouTubeの「後で見る」リストから指定した動画を削除する
+def manual_login(page):
+    """YouTubeに手動でログインする"""
+    try:
+        # ログインページにアクセス
+        logger.info("Navigating to YouTube login page...")
+        page.goto("https://www.youtube.com")
+        
+        # ログインボタンをクリック
+        login_button = page.get_by_role("link", name="ログイン")
+        if login_button:
+            login_button.click()
+            
+            # ユーザーに手動ログインを促す
+            logger.info("Please login manually to YouTube...")
+            input("Press Enter after you have logged in...")
+            
+            # ログイン後のページ読み込みを待機
+            page.wait_for_load_state("networkidle")
+            logger.info("Login completed")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Error during manual login: {str(e)}")
+        return False
 
-    Args:
-        driver: Seleniumのドライバー
-        video_id (str): 削除対象の動画ID
-
-    Returns:
-        bool: 削除に成功した場合はTrue、失敗した場合はFalse
-    """
+def delete_from_watchlist(video_url, page):
+    """YouTubeの動画を後で見るリストから削除する"""
     try:
         # 動画ページにアクセス
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        logger.info(f"Accessing video page: {url}")
-        driver.get(url)
+        logger.info(f"Accessing video page: {video_url}")
+        page.goto(video_url)
         
-        # ページが完全にロードされるまで少し待機
+        # ページが完全にロードされるまで待機
         logger.info("Waiting for page to load...")
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.TAG_NAME, "ytd-watch-flexy"))
-        )
-        
-        # 少し待機してページの読み込みを確実にする
-        time.sleep(2)
-        
-        # メタデータセクションが読み込まれるまで待機
-        logger.info("Waiting for metadata section...")
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.TAG_NAME, "ytd-watch-metadata"))
-        )
-        
-        # 3点ボタンを待機してクリック
-        logger.info("Waiting for threedot button...")
-        threedot_button = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "#button-shape button"))
-        )
-        logger.info("Found threedot button, clicking...")
-        driver.execute_script("arguments[0].click();", threedot_button)
-        logger.info("Clicked threedot button")
-        
-        # メニューが表示されるまで待機
-        time.sleep(2)
-        
-        # 保存ボタンをクリック
-        logger.info("Waiting for save button...")
-        save_button = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, "//*[@id='items']/ytd-menu-service-item-renderer[2]/tp-yt-paper-item/yt-formatted-string"))
-        )
-        logger.info("Found save button, clicking...")
-        driver.execute_script("arguments[0].click();", save_button)
-        logger.info("Clicked save button")
-        
-        # プレイリストメニューが表示されるまで待機
-        time.sleep(2)
-        
-        # 「後で見る」のチェックボックスを待機して見つける
-        logger.info("Looking for Watch Later checkbox...")
-        watch_later_checkbox = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.XPATH, "/html/body/ytd-app/ytd-popup-container/tp-yt-paper-dialog/ytd-add-to-playlist-renderer/div[2]/ytd-playlist-add-to-option-renderer[1]/tp-yt-paper-checkbox/div[1]/div"))
-        )
-        
-        # チェックボックスの状態を確認
-        logger.info("Checking Watch Later checkbox state...")
-        parent_element = watch_later_checkbox.find_element(By.XPATH, "./../..")
-        checkbox_state = parent_element.get_attribute("aria-checked")
-        logger.info(f"Checkbox state: {checkbox_state}")
-        
-        if checkbox_state == "true":
-            logger.info("Found checked Watch Later item, unchecking...")
-            driver.execute_script("arguments[0].click();", watch_later_checkbox)
-            logger.info(f"Successfully removed video '{video_id}' from Watch Later playlist")
-            # 変更が反映されるまで少し待機
-            time.sleep(1)
-            return True
-        else:
-            logger.info(f"Video '{video_id}' is not in Watch Later playlist")
-            return True
+        page.wait_for_selector("ytd-watch-flexy")
+        page.wait_for_timeout(2000)
 
-    except TimeoutException as e:
-        logger.error(f"Timeout waiting for elements: {e}")
-        return False
-    except NoSuchElementException as e:
-        logger.error(f"Element not found: {e}")
-        return False
+        try:
+            # メニューボタンをクリック
+            logger.info("Looking for menu button...")
+            menu_button = page.get_by_role("button", name="その他の操作")
+            if menu_button:
+                menu_button.click()
+                page.wait_for_timeout(1000)
+                
+                # 後で見るを削除
+                menu_response = page.query_elements(SAVE_MENU_QUERY)
+                if hasattr(menu_response.menu_items[0], 'watch_later'):
+                    menu_response.menu_items[0].watch_later.click()
+                    logger.info("Removed from Watch Later")
+                    return True
+                    
+        except Exception as e:
+            logger.error(f"Error while removing from Watch Later: {str(e)}")
+        
+        # 操作完了後の待機
+        page.wait_for_timeout(2000)
+        
     except Exception as e:
-        logger.error(f"Failed to remove video '{video_id}' from Watch Later: {e}")
-        return False
+        logger.error(f"Error occurred: {str(e)}")
+    
+    return False
 
 def update_notion_delete_flag(page_id, delete_flag=False, deleted_flag=False):
     """
@@ -255,43 +207,80 @@ def query_notion_delete_items():
         logger.error(f"Error querying Notion database: {str(e)}")
         return []
 
-def main():
-    # Seleniumドライバーをセットアップ
-    driver = None
-    try:
-        # 削除対象のアイテムを取得
-        delete_items = query_notion_delete_items()
-        if not delete_items:
-            logger.info("No items found with delete flag set to true")
-            return
-
-        driver = setup_driver()
-        success_count = 0
-        total_count = len(delete_items)
-
-        for item in delete_items:
-            page_id = item["page_id"]
-            video_id = item["video_id"]
-            title = item["title"]
-
-            logger.info(f"Processing: {title} (ID: {video_id})")
+def process_videos():
+    """後で見るリストから動画を削除する処理を実行"""
+    with sync_playwright() as p:
+        try:
+            # ブラウザの設定
+            browser = p.chromium.launch(
+                headless=False,
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--no-sandbox',
+                    '--disable-web-security',
+                    '--disable-features=IsolateOrigins,site-per-process'
+                ]
+            )
+            context = browser.new_context(
+                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
             
-            # 動画を「後で見る」リストから削除
-            if remove_from_watch_later(driver, video_id):
-                # 削除に成功した場合、deleteフラグをFalseに、deletedフラグをTrueに設定
-                if update_notion_delete_flag(page_id, delete_flag=False, deleted_flag=True):
-                    success_count += 1
-                    logger.info(f"Successfully processed: {title}")
-            else:
-                # 削除に失敗した場合、deleteフラグのみFalseに設定
-                if update_notion_delete_flag(page_id, delete_flag=False, deleted_flag=False):
-                    logger.info(f"Failed to remove video but updated delete flag: {title}")
+            # AgentQLでページをラップ
+            page = agentql.wrap(context.new_page())
+            
+            # 手動ログイン
+            if not manual_login(page):
+                logger.error("Failed to login")
+                return
+            
+            # 環境変数のチェック
+            notion_token = os.getenv("NOTION_API_TOKEN")
+            if not notion_token:
+                logger.error("NOTION_API_TOKEN is not set")
+                return
 
-        logger.info(f"Deletion complete. Successfully deleted {success_count} out of {total_count} videos.")
+            # 削除対象のアイテムを取得
+            delete_items = query_notion_delete_items()
+            if not delete_items:
+                logger.info("No items to delete")
+                return
 
-    finally:
-        if driver:
-            driver.quit()
+            success_count = 0
+            total_count = len(delete_items)
+
+            # 各アイテムを処理
+            for item in delete_items:
+                page_id = item["page_id"]
+                video_id = item.get("video_id", "")
+                title = item.get("title", "Unknown")
+                
+                logger.info(f"Processing: {title} (ID: {video_id})")
+                
+                # 動画を「後で見る」リストから削除
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+                if delete_from_watchlist(video_url, page):
+                    # 削除に成功した場合、deleteフラグをFalseに、deletedフラグをTrueに設定
+                    if update_notion_delete_flag(page_id, delete_flag=False, deleted_flag=True):
+                        success_count += 1
+                    else:
+                        logger.error(f"Failed to update Notion flags for {title}")
+                else:
+                    logger.error(f"Failed to remove {title} from Watch Later")
+
+            logger.info(f"Deletion complete. Successfully deleted {success_count} out of {total_count} videos.")
+
+        except Exception as e:
+            logger.error(f"Error in process_videos: {str(e)}")
+
+def main():
+    """メイン処理"""
+    try:
+        logger.info("Starting video processing")
+        process_videos()
+        logger.info("Completed video processing")
+        
+    except Exception as e:
+        logger.error(f"Error in main: {str(e)}")
 
 if __name__ == "__main__":
     main()
