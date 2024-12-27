@@ -1,0 +1,42 @@
+name: Manual Workflow
+
+on:
+  # 手動トリガーを有効にする
+  workflow_dispatch:
+    # 手動実行時のインプットパラメータを定義（必要に応じて）
+    inputs:
+      action_type:
+        description: 'Select action type'
+        required: true
+        default: 'get'
+        type: choice
+        options:
+          - get
+          - delete
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        run: |
+          if [ "${{ github.event.inputs.action_type }}" = "get" ]; then
+            python get_WL_from_youtube.py
+          else
+            python delete_WL_from_youtube.py
+          fi
