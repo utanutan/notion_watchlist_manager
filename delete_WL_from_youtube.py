@@ -35,6 +35,69 @@ SAVE_MENU_QUERY = """
 }
 """
 
+def check_login_status(page):
+    """ログイン状態を確認する"""
+    try:
+        # YouTubeのトップページに移動
+        page.goto("https://www.youtube.com")
+        page.wait_for_timeout(2000)
+        
+        # ログインボタンが存在するか確認
+        login_query = """
+        {
+            login_button(ログイン)
+        }
+        """
+        logger.info(f"Executing login button query: {login_query}")
+        response = page.query_elements(login_query)
+        logger.info(f"Login button query response: {response}")
+        
+        # レスポンスがnullの場合はログイン済み
+        if hasattr(response, 'login_button') and response.login_button is not None:
+            logger.info("Not logged in: Login button found")
+            return False
+        
+        logger.info("Login check passed: Login button not found")
+        
+        # サイドバーのライブラリボタンを確認（ログイン済みの場合のみ表示）
+        library_query = """
+        {
+            library_link(ライブラリ)
+        }
+        """
+        logger.info(f"Executing library button query: {library_query}")
+        library_response = page.query_elements(library_query)
+        logger.info(f"Library button query response: {library_response}")
+        if not hasattr(library_response, 'library_link') or library_response.library_link is None:
+            logger.info("Not logged in: Library button not found")
+            return False
+            
+        logger.info("Login check passed: Library button found")
+            
+        # 後で見るプレイリストへのアクセスを試行
+        page.goto("https://www.youtube.com/playlist?list=WL")
+        page.wait_for_timeout(2000)
+        
+        # プレイリストのタイトルを確認
+        playlist_query = """
+        {
+            playlist_title(後で見る)
+        }
+        """
+        logger.info(f"Executing playlist title query: {playlist_query}")
+        playlist_response = page.query_elements(playlist_query)
+        logger.info(f"Playlist title query response: {playlist_response}")
+        if not hasattr(playlist_response, 'playlist_title') or playlist_response.playlist_title is None:
+            logger.info("Not logged in: Watch Later playlist not accessible")
+            return False
+            
+        logger.info("Login verified: All checks passed")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error checking login status: {str(e)}")
+        return False
+
 def manual_login(page):
     """YouTubeに手動でログインする"""
     try:
@@ -53,8 +116,15 @@ def manual_login(page):
             
             # ログイン後のページ読み込みを待機
             page.wait_for_load_state("networkidle")
-            logger.info("Login completed")
-            return True
+            page.wait_for_timeout(2000)
+            
+            # ログイン状態を確認
+            if check_login_status(page):
+                logger.info("Login completed successfully")
+                return True
+            else:
+                logger.error("Login verification failed")
+                return False
             
     except Exception as e:
         logger.error(f"Error during manual login: {str(e)}")
@@ -156,7 +226,9 @@ def query_notion_delete_items():
     }
 
     try:
+        logger.info(f"Executing query: {data}")
         response = requests.post(url, headers=headers, json=data)
+        logger.info(f"Query response: {response.text}")
         if response.status_code != 200:
             logger.error(f"Failed to query Notion DB: {response.status_code}, {response.text}")
             return []
@@ -211,8 +283,13 @@ def process_videos():
     """後で見るリストから動画を削除する処理を実行"""
     with sync_playwright() as p:
         try:
+            # ユーザーデータディレクトリの設定
+            user_data_dir = os.path.abspath('./chrome_profile')
+            os.makedirs(user_data_dir, exist_ok=True)
+            
             # ブラウザの設定
-            browser = p.chromium.launch(
+            browser = p.chromium.launch_persistent_context(
+                user_data_dir=user_data_dir,
                 headless=False,
                 args=[
                     '--disable-blink-features=AutomationControlled',
@@ -221,17 +298,18 @@ def process_videos():
                     '--disable-features=IsolateOrigins,site-per-process'
                 ]
             )
-            context = browser.new_context(
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            )
             
             # AgentQLでページをラップ
-            page = agentql.wrap(context.new_page())
+            page = agentql.wrap(browser.new_page())
             
-            # 手動ログイン
-            if not manual_login(page):
-                logger.error("Failed to login")
-                return
+            # ログイン状態を確認
+            if not check_login_status(page):
+                logger.info("Login required...")
+                if not manual_login(page):
+                    logger.error("Failed to login")
+                    return
+            else:
+                logger.info("Already logged in")
             
             # 環境変数のチェック
             notion_token = os.getenv("NOTION_API_TOKEN")
